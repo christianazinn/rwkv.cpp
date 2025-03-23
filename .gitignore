@@ -32,3 +32,12 @@ compile_commands.json
 .venv
 __pycache__
 .swiftpm
+
+*.so
+tests/
+bin/
+Makefile
+*.cmake
+CMakeCache.txt
+extras/
+CMakeFiles/
