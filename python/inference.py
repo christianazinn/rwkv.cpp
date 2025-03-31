@@ -47,7 +47,7 @@ def generate(
     )
 
     logits_processor = StopLogitsProcessor(
-        tokenizer.vocab["Bar_None"], tokenizer.vocab["FillBar_End"], tokenizer
+        tokenizer.vocab["Bar_None"], tokenizer.vocab["FillBar_End"], tokenizer.vocab["Track_Start"], tokenizer.vocab["Track_End"], tokenizer
     )
 
     # Infill bars
@@ -91,7 +91,6 @@ def generate_new_track(
 
     # In this case, the prompt is a toksequence containing all the tracks
     input_seq = tokenizer.encode(score)
-    print(len(input_seq))
 
     # Add <TRACK_START> and <PROGRAM> tokens
     input_seq.ids.append(tokenizer.vocab["Track_Start"])
@@ -105,7 +104,6 @@ def generate_new_track(
         input_seq.tokens.append(control)
 
     # TODO CUDA
-    # TODO you need a StopLogitsProcessor for Track_End
     output_ids = model.generate(LongTensor([input_seq.ids]), **generate_kwargs)
     output_seq = TokSequence(ids=output_ids[0].tolist(), are_ids_encoded=True)
 
@@ -117,8 +115,6 @@ def generate_new_track(
     # Decode BPE ids before getting the associated tokens
     tokenizer.decode_token_ids(output_seq)
     output_seq.tokens = tokenizer._ids_to_tokens(output_seq.ids)
-
-    print(output_seq.tokens)
 
     # It is expected to have a <TRACK_END> token at the end of the sequence.
     if output_seq.tokens[-1] != "Track_End":
@@ -256,10 +252,10 @@ def infill_bars(
         start_time = time.time()
 
         output_ids = model.generate(
-            LongTensor([input_seq.ids]),# .to("cuda"),
+            LongTensor([input_seq.ids]),
             logits_processor=logit_processor_list,
             **generate_kwargs,
-        )[0].cpu().numpy()
+        )[0].numpy()
 
         end_time = time.time()
         print("[INFO::infill_bars] Time spent for generation: ", end_time - start_time)
@@ -277,16 +273,22 @@ def infill_bars(
         ].tolist()
         # decode_token_ids doesn't support numpy arrays for ids list
         tokenizer.decode_token_ids(generated_tokens)
+        if generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
+            generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
         bar_none_token_idxs = np.where(
             np.array(generated_tokens.ids) == tokenizer.vocab["Bar_None"]
         )[0]
         # bar_none_token_idxs[-1] because we must exclude the last BarNone token,
         # which is used by the logits processor to stop generation
-        print(generated_tokens.ids)
         print(generated_tokens.tokens)
-        generated_tokens.ids = generated_tokens.ids[
-            0 : bar_none_token_idxs[logits_processor.n_bars_to_infill]
-        ]
+        try:
+            generated_tokens.ids = generated_tokens.ids[
+                0 : bar_none_token_idxs[logits_processor.n_bars_to_infill]
+            ]
+        except IndexError:
+            pass
+        print("------------------------------")
+        print(generated_tokens.tokens)
 
         tokenizer.decode_token_ids(tokens[track_idx])
         tokens[track_idx].ids[token_start_idx:token_end_idx] = generated_tokens.ids
@@ -304,7 +306,7 @@ def _adapt_prompt_for_bar_infilling(
     track_idx: int,
     tokens: list[TokSequence],
     subset_bars_to_infill: tuple[int, int, list[str]],
-    num_context_bars: int = 8,
+    num_context_bars: int = 2,
 ) -> TokSequence:
     """
     Construct the prompt for bar infilling.
@@ -399,27 +401,35 @@ def _adapt_prompt_for_bar_infilling(
         output_toksequence.ids.append(tokenizer.vocab[control])
         output_toksequence.tokens.append(control)
 
+    # with open("tokens.txt", "w") as file:
+    #    for token in output_toksequence.tokens:
+    #        file.write(token + "\n")
+        
+    print(len(output_toksequence))
+    print("------")
+
     return output_toksequence, token_idx_start, token_idx_end
 
 
 if __name__ == "__main__":
-    import fla
-    from transformers import GenerationConfig, AutoModelForCausalLM
+    from transformers import GenerationConfig
     from symusic import Synthesizer, dump_wav
     from pathlib import Path
     from rwkv_cpp.cpp_model import create_cpp_model
+    trk = 0
     INFERENCE_CONFIG = InferenceConfig(
         {
-            # 0: [(4, 5, [])],
+            # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
+            trk: [(4, 5, ["ACBarNoteDensity_6", "ACBarNoteDurationQuarter_1", "ACBarNoteDurationEight_1", "ACBarOnsetPolyphonyMin_4"])],
         },
         [
-            (43, ["ACBarPitchClass_3"]),
+            # (0, ["ACBarPitchClass_3", "ACTrackNoteDensityMax_4", "ACTrackRepetition_0.89"]),
         ],
     )
     gen_config = GenerationConfig(
             num_beams=1,
             temperature=1.2,
-            repetition_penalty=3.0,
+            repetition_penalty=1.2,
             top_k=20,
             top_p=0.95,
             max_new_tokens=300,
@@ -429,7 +439,7 @@ if __name__ == "__main__":
     current_dir = Path("/home/christian/MIDI-RWKV/src/inference")
     TOK_PATH = current_dir.parent / "tokenizer/tokenizer_with_acs.json"
     MODEL_PATH = str(current_dir.parent / "outputs/m2fla/rcpp.bin")
-    INPUT_PATH = str(current_dir / "mat/rollinggirlEDIT.mid")
+    INPUT_PATH = str(current_dir / "mat/input.mid")
     OUTPUT_PATH = str(current_dir / "mat/output.mid")
     OUTWAV_PATH = str(current_dir / "mat/output.wav")
     INWAV_PATH = str(current_dir / "mat/input.wav")
@@ -437,7 +447,7 @@ if __name__ == "__main__":
     INPR_PATH = str(current_dir / "mat/input.png")
     
     tokenizer = MMM(params=TOK_PATH)
-    model = create_cpp_model(MODEL_PATH) #.to("cuda")
+    model = create_cpp_model(MODEL_PATH)
 
     print("Generating...")
 
@@ -468,11 +478,13 @@ if __name__ == "__main__":
 
     # matplotlib
     from matplotlib import pyplot as plt
-    intrack = inscore.resample(tpq=6, min_dur=1).tracks[0].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
-    outtrack = outscore.resample(tpq=6, min_dur=1).tracks[0].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
+    intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
+    outtrack = outscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
 
-    intrack_truncated = [intrack[0][:, :500], intrack[1][:, :500]]
-    outtrack_truncated = [outtrack[0][:, :500], outtrack[1][:, :500]]
+    a = 0
+    b = 500
+    intrack_truncated = [intrack[0][:, a:b], intrack[1][:, a:b]]
+    outtrack_truncated = [outtrack[0][:, a:b], outtrack[1][:, a:b]]
     plt.imshow(intrack_truncated[0] + intrack_truncated[1], aspect="auto", origin="lower")
     plt.savefig(INPR_PATH, dpi=300, bbox_inches="tight")
     plt.close()
