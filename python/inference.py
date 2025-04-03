@@ -271,6 +271,7 @@ def infill_bars(
         generated_tokens.ids = output_ids[
             fill_start_idx + len(subset_bars_to_infill[2]) + 1 : -1
         ].tolist()
+        print(generated_tokens.ids)
         # decode_token_ids doesn't support numpy arrays for ids list
         tokenizer.decode_token_ids(generated_tokens)
         if generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
@@ -280,7 +281,6 @@ def infill_bars(
         )[0]
         # bar_none_token_idxs[-1] because we must exclude the last BarNone token,
         # which is used by the logits processor to stop generation
-        print(generated_tokens.tokens)
         try:
             generated_tokens.ids = generated_tokens.ids[
                 0 : bar_none_token_idxs[logits_processor.n_bars_to_infill]
@@ -306,7 +306,7 @@ def _adapt_prompt_for_bar_infilling(
     track_idx: int,
     tokens: list[TokSequence],
     subset_bars_to_infill: tuple[int, int, list[str]],
-    num_context_bars: int = 2,
+    num_context_bars: int = 8,
 ) -> TokSequence:
     """
     Construct the prompt for bar infilling.
@@ -407,6 +407,7 @@ def _adapt_prompt_for_bar_infilling(
         
     print(len(output_toksequence))
     print("------")
+    # print(output_toksequence.tokens)
 
     return output_toksequence, token_idx_start, token_idx_end
 
@@ -417,15 +418,17 @@ if __name__ == "__main__":
     from pathlib import Path
     from rwkv_cpp.cpp_model import create_cpp_model
     trk = 0
+    acl = ['ACBarOnsetPolyphonyMin_2', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_14', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']
     INFERENCE_CONFIG = InferenceConfig(
         {
             # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
-            trk: [(4, 5, ["ACBarNoteDensity_6", "ACBarNoteDurationQuarter_1", "ACBarNoteDurationEight_1", "ACBarOnsetPolyphonyMin_4"])],
+            trk: [(14, 16, acl)],
         },
         [
             # (0, ["ACBarPitchClass_3", "ACTrackNoteDensityMax_4", "ACTrackRepetition_0.89"]),
         ],
     )
+
     gen_config = GenerationConfig(
             num_beams=1,
             temperature=1.2,
@@ -439,7 +442,7 @@ if __name__ == "__main__":
     current_dir = Path("/home/christian/MIDI-RWKV/src/inference")
     TOK_PATH = current_dir.parent / "tokenizer/tokenizer_with_acs.json"
     MODEL_PATH = str(current_dir.parent / "outputs/m2fla/rcpp.bin")
-    INPUT_PATH = str(current_dir / "mat/input.mid")
+    INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
     OUTPUT_PATH = str(current_dir / "mat/output.mid")
     OUTWAV_PATH = str(current_dir / "mat/output.wav")
     INWAV_PATH = str(current_dir / "mat/input.wav")
@@ -465,7 +468,7 @@ if __name__ == "__main__":
     output_scores.dump_midi(OUTPUT_PATH)
     print("Dumped MIDI, synthesizing...")
 
-    # synth
+    # # synth
     synth = Synthesizer()
     outscore = Score(OUTPUT_PATH)
     inscore = Score(INPUT_PATH)
@@ -474,7 +477,7 @@ if __name__ == "__main__":
     dump_wav(OUTWAV_PATH, outwav, sample_rate=44100, use_int16=True)
     dump_wav(INWAV_PATH, inwav, sample_rate=44100, use_int16=True)
 
-    print("Synthesized, plotting piano rolls...")
+    # print("Synthesized, plotting piano rolls...")
 
     # matplotlib
     from matplotlib import pyplot as plt
