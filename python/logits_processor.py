@@ -20,25 +20,23 @@ class StopLogitsProcessor(LogitsProcessor):
     :param n_bars_to_infill: number of bars to be infilled in this generation step.
     :param eos_token_id: ID of the EOS (end of sequence) token. If the number
     of bars reaches `max_bars`, the EOS token will be forced to stop generation.
+
     """
 
     n_bars_to_infill: int = 0  # This should change at every generation
     # step as we may need to infill a different number of bars at each step
     n_attribute_controls: int = 0  # Number of attribute controls to skip
     # when decoding using BPE
+    infill_type: str = None
 
     def __init__(
         self,
         bar_start_token_id: int,
         eos_token_id: int,
-        track_start_token_id: int,
-        track_end_token_id: int,
-        tokenizer: miditok.MusicTokenizer,
+        tokenizer: miditok.MusicTokenizer
     ) -> None:
         self.bar_start_token_id = bar_start_token_id
         self.eos_token_id = eos_token_id
-        self.track_start_token_id = track_start_token_id
-        self.track_end_token_id = track_end_token_id
         self.tokenizer = tokenizer
         self.total_time = 0
 
@@ -60,15 +58,20 @@ class StopLogitsProcessor(LogitsProcessor):
 
         generated_tokens = TokSequence(are_ids_encoded=True)
 
-        fill_start_idx = np.where(
-            input_ids[0].cpu().numpy() == self.tokenizer.vocab["FillBar_Start"]
-        )[0][0]
+        if self.infill_type == "bar":
+            fill_start_idx = np.where(
+                input_ids[0].numpy() == self.tokenizer.vocab["FillBar_Start"]
+            )[0][0]
+        elif self.infill_type == "track":
+            fill_start_idx = np.where(
+                input_ids[0].numpy() == self.tokenizer.vocab["Infill_Track"]
+            )[0][0]
 
         n_bar_none = 0
         if fill_start_idx + self.n_attribute_controls + 1 < len(input_ids[0]):
             generated_tokens.ids = input_ids[0][
                 fill_start_idx + self.n_attribute_controls + 1 :
-            ].cpu().tolist()
+            ].tolist()
             self.tokenizer.decode_token_ids(generated_tokens)
 
             n_bar_none = len(
@@ -88,13 +91,9 @@ class StopLogitsProcessor(LogitsProcessor):
         if n_bar_none <= self.n_bars_to_infill:
             scores[:, self.eos_token_id] = -999999.0
 
-        # TODO: should not be able to sample TrackEnd/TrackStart!!!
-        scores[:, self.track_start_token_id] = -999999.0
-        scores[:, self.track_end_token_id] = -999999.0
-
         end_time = time.time()
         self.total_time += end_time - start_time
 
-        if input_ids[0][-1].cpu().item() == self.tokenizer.vocab["Duration_5.0.1"]:
+        if input_ids[0][-1] == self.tokenizer.vocab["Duration_5.0.1"]:
             scores[:, self.eos_token_id] = -999999.0
         return scores
