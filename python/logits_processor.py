@@ -33,10 +33,14 @@ class StopLogitsProcessor(LogitsProcessor):
         self,
         bar_start_token_id: int,
         eos_token_id: int,
+        track_start_token_id: int,
+        track_end_token_id: int,
         tokenizer: miditok.MusicTokenizer
     ) -> None:
         self.bar_start_token_id = bar_start_token_id
         self.eos_token_id = eos_token_id
+        self.track_start_token_id = track_start_token_id
+        self.track_end_token_id = track_end_token_id
         self.tokenizer = tokenizer
         self.total_time = 0
 
@@ -80,20 +84,28 @@ class StopLogitsProcessor(LogitsProcessor):
                 )[0]
             )
 
+        penalty = 999999.0
+
         # If we reach the self.n_bars_to_infill + 1 BarStart token sampled,
         # we have generated enough content
         if n_bar_none > self.n_bars_to_infill:
-            scores[:, :] = -999999.0  # Penalize all tokens
+            scores[:, :] = -penalty  # Penalize all tokens
             # But enforce the sampling of EOS token to stop generation
-            scores[:, self.eos_token_id] = 999999.0
+            scores[:, self.eos_token_id] = penalty
 
         # Don't sample an EOS token until all bars are generated
         if n_bar_none <= self.n_bars_to_infill:
-            scores[:, self.eos_token_id] = -999999.0
+            scores[:, self.eos_token_id] = -penalty
 
         end_time = time.time()
         self.total_time += end_time - start_time
 
-        if input_ids[0][-1] == self.tokenizer.vocab["Duration_5.0.1"]:
-            scores[:, self.eos_token_id] = -999999.0
+        # don't sample track start/end
+        scores[:, self.track_start_token_id] = -penalty
+        scores[:, self.track_end_token_id] = -penalty
+        # mess around with 797 and 665 logits
+        scores[:, 797] = -penalty
+
+        scores[:, 4] = -penalty # Infill_Track
+
         return scores

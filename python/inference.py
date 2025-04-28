@@ -50,7 +50,7 @@ def generate(
     )
 
     logits_processor = StopLogitsProcessor(
-        tokenizer.vocab["Bar_None"], tokenizer.vocab["FillBar_End"], tokenizer
+        tokenizer.vocab["Bar_None"], tokenizer.vocab["FillBar_End"], tokenizer.vocab["Track_Start"], tokenizer.vocab["Track_End"], tokenizer
     )
 
     input_tokens = tokenizer.encode(score, concatenate_track_sequences=False)
@@ -305,16 +305,34 @@ def infill_bars(
             fill_start_idx + len(subset_bars_to_infill[2]) + 2 : -1
         ].tolist()
         # decode_token_ids doesn't support numpy arrays for ids list
+        # print(generated_tokens.ids)
         tokenizer.decode_token_ids(generated_tokens)
         if generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
             generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
         bar_none_token_idxs = np.where(
             np.array(generated_tokens.ids) == tokenizer.vocab["Bar_None"]
         )[0]
-        # bar_none_token_idxs[-1] because we must exclude the last BarNone token,
-        # which is used by the logits processor to stop generation
         print(generated_tokens.tokens)
+        # make sure there is at least one Pitch_* token in the generated sequence
+        pattern = r"Pitch(.*)"
+        # if sum(1 for token in generated_tokens.tokens if re.match(pattern, token)) < 3:
+        if not any(re.match(pattern, token) for token in generated_tokens.tokens):
+            raise ValueError(
+                f"[WARNING::infill_bars] Ignoring infilling of bars "
+                f"{subset_bars_to_infill[0]} - "
+                f"{subset_bars_to_infill[1]} on track {track_idx}"
+                " because we have too few Pitch tokens in the generated sequence"
+            )
+        if len(generated_tokens.ids) >= generate_kwargs["generation_config"].max_new_tokens:
+            raise ValueError(
+                f"[WARNING::infill_bars] Ignoring infilling of bars "
+                f"{subset_bars_to_infill[0]} - "
+                f"{subset_bars_to_infill[1]} on track {track_idx}"
+                " because the model generated a sequence of the max length"
+            )
         try:
+            # bar_none_token_idxs[-1] because we must exclude the last BarNone token,
+            # which is used by the logits processor to stop generation
             generated_tokens.ids = generated_tokens.ids[
                 #bar_none_token_idxs[0] : bar_none_token_idxs[-1]
                 0 : bar_none_token_idxs[logits_processor.n_bars_to_infill]
@@ -512,18 +530,18 @@ def _adapt_prompt_for_infilling(
 
     #Just for debugging purposes
 
-    with open("model_prompt_tokens.txt", "w") as file:
-        bar_n = 0
-        track_n = 0
-        for token in output_toksequence.tokens:
-            if token == "Track_End":
-                bar_n = 0
-                track_n += 1
-            if token == "Bar_None":
-                file.write(f"TrackNumber:{track_n} BarNumber:{bar_n} " + token + "\n")
-                bar_n += 1
-            else:
-                file.write(token + "\n")
+    # with open("model_prompt_tokens.txt", "w") as file:
+    #     bar_n = 0
+    #     track_n = 0
+    #     for token in output_toksequence.tokens:
+    #         if token == "Track_End":
+    #             bar_n = 0
+    #             track_n += 1
+    #         if token == "Bar_None":
+    #             file.write(f"TrackNumber:{track_n} BarNumber:{bar_n} " + token + "\n")
+    #             bar_n += 1
+    #         else:
+    #             file.write(token + "\n")
 
     return output_toksequence, token_idx_start, token_idx_end
 
@@ -542,11 +560,11 @@ if __name__ == "__main__":
     from pathlib import Path
     from rwkv_cpp.cpp_model import create_cpp_model
     trk = 0
-    acl = ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_10', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']
+    acl = ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_1', 'ACBarNoteDensity_4', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_1', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_0', 'ACBarNoteDurationSixteenth_0']
     INFERENCE_CONFIG = InferenceConfig(
         bars_to_generate={
             # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
-            trk: [(14, 16, acl, "bar")],
+            trk: [(26, 28, acl, "bar")],
         },
         new_tracks=[
             # (0, ["ACBarPitchClass_3", "ACTrackNoteDensityMax_4", "ACTrackRepetition_0.89"]),
@@ -556,19 +574,20 @@ if __name__ == "__main__":
 
     gen_config = GenerationConfig(
             num_beams=1,
-            temperature=0.6,
-            repetition_penalty=0.6,
+            temperature=1.0,
+            repetition_penalty=1.0,
             top_k=20,
             top_p=0.95,
             max_new_tokens=300,
             # ALWAYS test once with do_sample=False
-            do_sample=True,
+            do_sample=False,
         )
     
     current_dir = Path("/home/christian/MIDI-RWKV/src/inference")
     TOK_PATH = current_dir.parent / "tokenizer/tokenizer_with_acs.json"
     MODEL_PATH = str(current_dir.parent / "outputs/m2fla/rcpp.bin")
-    INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
+    # INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
+    INPUT_PATH = "/home/christian/MIDI-RWKV/RWKV-PEFT/data/disc_1/01_Introducing_The_Beatles__A_Taste_Of_Honey.mid"
     OUTPUT_PATH = str(current_dir / "mat/output.mid")
     OUTWAV_PATH = str(current_dir / "mat/output.wav")
     INWAV_PATH = str(current_dir / "mat/input.wav")
@@ -610,8 +629,8 @@ if __name__ == "__main__":
     intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
     outtrack = outscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
 
-    a = 0
-    b = 500
+    a = 400
+    b = 900
     intrack_truncated = [intrack[0][:, a:b], intrack[1][:, a:b]]
     outtrack_truncated = [outtrack[0][:, a:b], outtrack[1][:, a:b]]
     plt.imshow(intrack_truncated[0] + intrack_truncated[1], aspect="auto", origin="lower")
