@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import os
 import time
 import warnings
 from copy import deepcopy
@@ -277,70 +278,89 @@ def infill_bars(
 
         start_time = time.time()
 
-        output_ids = model.generate(
-            LongTensor([input_seq.ids]),
-            logits_processor=logit_processor_list,
-            **generate_kwargs,
-        )[0].numpy()
+        new_generated_tokens = TokSequence(are_ids_encoded=True)
+        offset = 0
 
-        end_time = time.time()
-        generation_time = end_time - start_time
-        print("[INFO::infill_bars] Time spent for generation: ", generation_time)
-        print("Time spent in logits processor ", logits_processor.total_time)
+        for i in range(logits_processor.n_bars_to_infill):
+            print(input_seq.ids)
+            output_ids = model.generate(
+                LongTensor([input_seq.ids]),
+                logits_processor=logit_processor_list,
+                **generate_kwargs,
+            )[0].numpy()
 
-        #with open("output.txt", "a") as f:
-        #    f.write(f"{number}\n")
+            end_time = time.time()
+            generation_time = end_time - start_time
+            print("[INFO::infill_bars] Time spent for generation: ", generation_time)
+            print("Time spent in logits processor ", logits_processor.total_time)
 
-        start_time = time.time()
+            start_time = time.time()
 
-        if subset_bars_to_infill[3] == "bar":
-            fill_start_idx = np.where(output_ids == tokenizer.vocab["FillBar_Start"])[0][0]
-        elif subset_bars_to_infill[3] == "track":
-            fill_start_idx = np.where(output_ids == tokenizer.vocab["Infill_Track"])[0][0]
+            if subset_bars_to_infill[3] == "bar":
+                fill_start_idx = np.where(output_ids == tokenizer.vocab["FillBar_Start"])[0][0]
+            elif subset_bars_to_infill[3] == "track":
+                fill_start_idx = np.where(output_ids == tokenizer.vocab["Infill_Track"])[0][0]
 
-        # Here we isolate the generated tokens doing some filtering. In particular,
-        # the model may generate some tokens before the first Bar_None token
-        generated_tokens = TokSequence(are_ids_encoded=True)
-        generated_tokens.ids = output_ids[
-            fill_start_idx + len(subset_bars_to_infill[2]) + 2 : -1
-        ].tolist()
-        # decode_token_ids doesn't support numpy arrays for ids list
-        # print(generated_tokens.ids)
-        tokenizer.decode_token_ids(generated_tokens)
-        if generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
-            generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
-        bar_none_token_idxs = np.where(
-            np.array(generated_tokens.ids) == tokenizer.vocab["Bar_None"]
-        )[0]
-        print(generated_tokens.tokens)
-        # make sure there is at least one Pitch_* token in the generated sequence
-        pattern = r"Pitch(.*)"
-        # if sum(1 for token in generated_tokens.tokens if re.match(pattern, token)) < 3:
-        if not any(re.match(pattern, token) for token in generated_tokens.tokens):
-            raise ValueError(
-                f"[WARNING::infill_bars] Ignoring infilling of bars "
-                f"{subset_bars_to_infill[0]} - "
-                f"{subset_bars_to_infill[1]} on track {track_idx}"
-                " because we have too few Pitch tokens in the generated sequence"
-            )
-        if len(generated_tokens.ids) >= generate_kwargs["generation_config"].max_new_tokens:
-            raise ValueError(
-                f"[WARNING::infill_bars] Ignoring infilling of bars "
-                f"{subset_bars_to_infill[0]} - "
-                f"{subset_bars_to_infill[1]} on track {track_idx}"
-                " because the model generated a sequence of the max length"
-            )
-        try:
-            # bar_none_token_idxs[-1] because we must exclude the last BarNone token,
-            # which is used by the logits processor to stop generation
-            generated_tokens.ids = generated_tokens.ids[
-                #bar_none_token_idxs[0] : bar_none_token_idxs[-1]
-                0 : bar_none_token_idxs[logits_processor.n_bars_to_infill]
-            ]
-        except:
-            pass
+            # Here we isolate the generated tokens doing some filtering. In particular,
+            # the model may generate some tokens before the first Bar_None token
+            generated_tokens = TokSequence(are_ids_encoded=True)
+            print("output ids")
+            print(output_ids.tolist())
+            # print(new_generated_tokens.ids)
+            generated_tokens.ids = output_ids[
+                fill_start_idx + len(subset_bars_to_infill[2]) + offset + 2 : -1
+            ].tolist()
+            print(generated_tokens.ids)
+            # decode_token_ids doesn't support numpy arrays for ids list
+            # print(generated_tokens.ids)
+            tokenizer.decode_token_ids(generated_tokens)
+            if len(generated_tokens.ids) > 0 and generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
+                generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
+                generated_tokens.ids.insert(1, tokenizer.vocab["TimeSig_4/4"])
+            bar_none_token_idxs = np.where(
+                np.array(generated_tokens.ids) == tokenizer.vocab["Bar_None"]
+            )[0]
+            # print(bar_none_token_idxs)
+            print(generated_tokens.tokens)
+            try:
+                generated_tokens.ids = generated_tokens.ids[
+                    bar_none_token_idxs[0] : bar_none_token_idxs[1]
+                    # bar_none_token_idxs[0] : bar_none_token_idxs[logits_processor.n_bars_to_infill]
+                ]
+                print("gentokid")
+                new_generated_tokens.ids += generated_tokens.ids
+                print(generated_tokens.ids)
+                generated_tokens.ids.append(tokenizer.vocab["Bar_None"])
+                generated_tokens.ids.append(tokenizer.vocab["TimeSig_4/4"])
+                attribute_controls = subset_bars_to_infill[2]
+                for control in attribute_controls:
+                    generated_tokens.ids.append(tokenizer.vocab[control])
+                tokenizer.encode_token_ids(generated_tokens)
+                print("----------------------asdf")
+                print(input_seq.ids[-10:])
+                print(generated_tokens.ids[:10])
+                print("-------------")
+                input_seq.ids += generated_tokens.ids
+                # new_generated_tokens.ids += generated_tokens.ids
+                offset += len(generated_tokens.ids)
+                # TODO: this is a stupid blunt tool
+                input_seq.ids = [x if x != 797 else 665 for x in input_seq.ids]
+            except Exception:
+                pass
+                # formerly: pass
+                # TODO: does this improve?
+                # raise ValueError(
+                #     f"[WARNING::infill_bars] Ignoring infilling of bars "
+                #     f"{subset_bars_to_infill[0]} - "
+                #     f"{subset_bars_to_infill[1]} on track {track_idx}"
+                #     " because the model failed to generate a sequence of the right length"
+                # )
+        print("---------------done--------------------")
+        print(new_generated_tokens.ids)
+        tokenizer.decode_token_ids(new_generated_tokens)
+        print(new_generated_tokens.ids)
 
-        tokens[track_idx].ids[token_start_idx:token_end_idx] = generated_tokens.ids
+        tokens[track_idx].ids[token_start_idx:token_end_idx] = new_generated_tokens.ids
         tokens[track_idx].tokens = tokenizer._ids_to_tokens(tokens[track_idx].ids)
 
         end_time = time.time()
@@ -448,12 +468,15 @@ def _adapt_prompt_for_infilling(
             #        file.write(token + "\n")
     
             times = np.array([event.time for event in tokens[i].events])
-            if start_bar_idx - context_length < 0:
+            if start_bar_idx - context_length < 0:            
                 context_token_start_idx = 0
             else:
-                context_token_start_idx = np.nonzero(
-                    times >= bars_ticks[start_bar_idx - context_length]
-                )[0][0]
+                try:
+                    context_token_start_idx = np.nonzero(
+                        times >= bars_ticks[start_bar_idx - context_length]
+                    )[0][0]
+                except IndexError:
+                    context_token_start_idx = 0
             if end_bar_idx + context_length >= num_bars - 1:
                 context_token_end_idx = len(tokens[i]) - 1
             else:
@@ -512,14 +535,17 @@ def _adapt_prompt_for_infilling(
     if subset_bars_to_infill[3] == "bar":
         output_toksequence.ids.append(tokenizer.vocab["FillBar_Start"])
         output_toksequence.tokens.append("FillBar_Start")
+        output_toksequence.ids.append(tokenizer.vocab["Bar_None"])
+        output_toksequence.tokens.append("Bar_None")
+        output_toksequence.ids.append(tokenizer.vocab["TimeSig_4/4"])
+        output_toksequence.tokens.append("TimeSig_4/4")
     elif subset_bars_to_infill[3] == "track":
         output_toksequence.ids.append(tokenizer.vocab["Infill_Track"])
         output_toksequence.tokens.append("Infill_Track")
         output_toksequence.ids.append(infill_program_id)
         output_toksequence.tokens.append(infill_program_token)
             
-            
-
+    # TODO: not for mistral
     attribute_controls = subset_bars_to_infill[2]
     for control in attribute_controls:
         output_toksequence.ids.append(tokenizer.vocab[control])
@@ -527,6 +553,10 @@ def _adapt_prompt_for_infilling(
 
     # Encode into BPE tokens
     tokenizer.encode_token_ids(output_toksequence)
+
+    print(output_toksequence.ids)
+    print(output_toksequence.tokens)
+    print("-------------------------------")
 
     #Just for debugging purposes
 
@@ -560,34 +590,35 @@ if __name__ == "__main__":
     from pathlib import Path
     from rwkv_cpp.cpp_model import create_cpp_model
     trk = 0
-    acl = ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_1', 'ACBarNoteDensity_4', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_1', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_0', 'ACBarNoteDurationSixteenth_0']
+    acl = ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_8', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']
     INFERENCE_CONFIG = InferenceConfig(
         bars_to_generate={
             # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
-            trk: [(26, 28, acl, "bar")],
+            trk: [(14, 16, acl, "bar")],
         },
         new_tracks=[
             # (0, ["ACBarPitchClass_3", "ACTrackNoteDensityMax_4", "ACTrackRepetition_0.89"]),
         ],
-        context_length=8
+        context_length=4
     )
 
     gen_config = GenerationConfig(
             num_beams=1,
             temperature=1.0,
-            repetition_penalty=1.0,
+            repetition_penalty=1.2,
             top_k=20,
             top_p=0.95,
             max_new_tokens=300,
+            epsilon_cutoff=9e-4,
             # ALWAYS test once with do_sample=False
-            do_sample=False,
+            do_sample=True,
         )
     
     current_dir = Path("/home/christian/MIDI-RWKV/src/inference")
     TOK_PATH = current_dir.parent / "tokenizer/tokenizer_with_acs.json"
     MODEL_PATH = str(current_dir.parent / "outputs/m2fla/rcpp.bin")
-    # INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
-    INPUT_PATH = "/home/christian/MIDI-RWKV/RWKV-PEFT/data/disc_1/01_Introducing_The_Beatles__A_Taste_Of_Honey.mid"
+    INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
+    # INPUT_PATH = "/home/christian/MIDI-RWKV/RWKV-PEFT/data/disc_1/01_Introducing_The_Beatles__A_Taste_Of_Honey.mid"
     OUTPUT_PATH = str(current_dir / "mat/output.mid")
     OUTWAV_PATH = str(current_dir / "mat/output.wav")
     INWAV_PATH = str(current_dir / "mat/input.wav")
@@ -629,8 +660,8 @@ if __name__ == "__main__":
     intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
     outtrack = outscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
 
-    a = 400
-    b = 900
+    a = 200
+    b = 500
     intrack_truncated = [intrack[0][:, a:b], intrack[1][:, a:b]]
     outtrack_truncated = [outtrack[0][:, a:b], outtrack[1][:, a:b]]
     plt.imshow(intrack_truncated[0] + intrack_truncated[1], aspect="auto", origin="lower")

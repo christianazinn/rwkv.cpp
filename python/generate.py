@@ -9,6 +9,8 @@ import os
 import numpy as np
 import torch.cuda as cuda
 from miditok import MMM
+from miditok.utils import get_bars_ticks, get_beats_ticks, get_score_ticks_per_beat
+from miditok.attribute_controls import BarNoteDensity, BarNoteDuration, BarOnsetPolyphony
 from symusic import Score
 from transformers import AutoModelForCausalLM, GenerationConfig
 from inference import InferenceConfig, generate
@@ -19,9 +21,9 @@ TEMPERATURE_SAMPLING = float(os.getenv("TEMPERATURE_SAMPLING", 1.0))
 REPETITION_PENALTY = float(os.getenv("REPETITION_PENALTY", 1.0))
 TOP_K = int(os.getenv("TOP_K", 20))
 TOP_P = float(os.getenv("TOP_P", 0.95))
-EPSILON_CUTOFF = None
+EPSILON_CUTOFF = 9e-4 # None
 ETA_CUTOFF = None
-MAX_NEW_TOKENS = 300
+MAX_NEW_TOKENS = 150
 MAX_LENGTH = 99999
 
 HERE = Path(__file__).parent
@@ -128,6 +130,42 @@ def test_generate(tokenizer: MMM,
             "has no notes!"
         )
         return False
+    
+    
+    # extract attribute controls
+    density_control = BarNoteDensity(18)
+    duration_control = BarNoteDuration()
+    polyphony_control = BarOnsetPolyphony(1, 6)
+    ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
+    ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
+    try:
+        density_controls = density_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+        duration_controls = duration_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+        polyphony_controls = polyphony_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        print(f"Error computing attribute controls: {e}")
+
+    # print("starting")
+    # print(density_controls)
+    # print(duration_controls)
+    # print(polyphony_controls)
+    # print("ending")
+
+    if len(density_controls) == 0 or len(duration_controls) == 0 or len(polyphony_controls) == 0:
+        print(
+            f"[WARNING::test_generate] Infilling region"
+            f"{bar_idx_infill_start} - "
+            f"{bar_idx_infill_start + NUM_BARS_TO_INFILL} on track {track_idx}"
+            "has no attribute controls!"
+        )
+        return False
+    
+    partial_acl = [polyphony_controls[0], polyphony_controls[1], density_controls[0], duration_controls[0], duration_controls[1], duration_controls[2], duration_controls[3], duration_controls[4]] if not DRUM_GENERATION else [density_controls[0]]
+    
+    acl = [f"{x.type_}_{x.value}" for x in partial_acl]
+    print(acl)
 
     inference_config = InferenceConfig(
             CONTEXT_SIZE,
@@ -136,7 +174,7 @@ def test_generate(tokenizer: MMM,
                     (
                         bar_idx_infill_start,
                         bar_idx_infill_start + NUM_BARS_TO_INFILL,
-                        [],
+                        acl,
                         "bar"
                     )
                 ],
@@ -171,7 +209,7 @@ def test_generate(tokenizer: MMM,
 
     return True
 
-MODEL_PATH = os.getenv("MODEL_PATH")#  if not MISTRAL else "/home/christian/MIDI-RWKV/rwkv.cpp/python/MISTRAL_123000"
+MODEL_PATH = None
 # "/home/christian/MIDI-RWKV/src/outputs/m2fla/rcpp.bin"
 
 CONTEXT_SIZE = None
@@ -205,10 +243,10 @@ if __name__ == "__main__":
     parser.add_argument("-e", "--end_infilling",
                         type=lambda x: x.lower() in ["true", "1", "yes"],
                         required=True, help="Boolean flag for infilling end")
-    # parser.add_argument("-m", "--mistral",
-    #                     type=lambda x: x.lower() in ["true", "1", "yes"],
-    #                     required=True,
-    #                     help="Boolean flag for Mistral (True/False)")
+    parser.add_argument("-m", "--mistral",
+                        type=lambda x: x.lower() in ["true", "1", "yes"],
+                        required=True,
+                        help="Boolean flag for Mistral (True/False)")
 
     # Parse arguments
     args = parser.parse_args()
@@ -217,6 +255,9 @@ if __name__ == "__main__":
     CONTEXT_SIZE = args.context
     DRUM_GENERATION = args.drums
     END_INFILLING = args.end_infilling
+    MISTRAL = args.mistral
+
+    MODEL_PATH = os.getenv("MODEL_PATH") if not MISTRAL else "/home/christian/MIDI-RWKV/rwkv.cpp/python/MISTRAL_123000"
 
     additional_flags = "_"
     if DRUM_GENERATION:
@@ -238,9 +279,17 @@ if __name__ == "__main__":
         import shutil
         shutil.rmtree(MIDI_OUTPUT_FOLDER)
 
-    tokenizer = MMM(params="/home/christian/MIDI-RWKV/src/tokenizer/tokenizer_with_acs.json")#  if not MISTRAL else "/home/christian/MIDI-RWKV/src/tokenizer/tokenizer.json")
+    tokenizer = MMM(params="/home/christian/MIDI-RWKV/src/tokenizer/tokenizer_with_acs.json" if not MISTRAL else "/home/christian/MIDI-RWKV/src/tokenizer/tokenizer.json")
 
-    model = create_cpp_model(MODEL_PATH) # if not MISTRAL else AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+    model = create_cpp_model(MODEL_PATH) if not MISTRAL else AutoModelForCausalLM.from_pretrained(MODEL_PATH)
+
+    if MISTRAL:
+        import peft
+        model = peft.PeftModel.from_pretrained(
+            model,
+            "/home/christian/MIDI-RWKV/RWKV-PEFT/lora_model/checkpoint-870",
+            device_map="cpu",
+        )
 
     gen_config = GenerationConfig(
         num_beams=NUM_BEAMS,
@@ -252,7 +301,7 @@ if __name__ == "__main__":
         eta_cutoff=ETA_CUTOFF,
         max_new_tokens=MAX_NEW_TOKENS,
         max_length=MAX_LENGTH,
-        do_sample = True
+        do_sample=True,
     )
 
     i = 0
@@ -261,5 +310,5 @@ if __name__ == "__main__":
         try:
             if test_generate(tokenizer, model, gen_config, midi_file):
                 i += 1
-        except:
+        except Exception as e:
             pass
