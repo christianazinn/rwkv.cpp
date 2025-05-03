@@ -61,19 +61,20 @@ class StopLogitsProcessor(LogitsProcessor):
         start_time = time.time()
 
         generated_tokens = TokSequence(are_ids_encoded=True)
+        print(input_ids)
 
         if self.infill_type == "bar":
             fill_start_idx = np.where(
-                input_ids[0].numpy() == self.tokenizer.vocab["FillBar_Start"]
-            )[0][0]
+                input_ids == self.tokenizer.vocab["FillBar_Start"]
+            )[0]
         elif self.infill_type == "track":
             fill_start_idx = np.where(
-                input_ids[0].numpy() == self.tokenizer.vocab["Infill_Track"]
-            )[0][0]
+                input_ids == self.tokenizer.vocab["Infill_Track"]
+            )[0]
 
         n_bar_none = 0
-        if fill_start_idx + self.n_attribute_controls + 1 < len(input_ids[0]):
-            generated_tokens.ids = input_ids[0][
+        if fill_start_idx + self.n_attribute_controls + 1 < len(input_ids):
+            generated_tokens.ids = input_ids[
                 fill_start_idx + self.n_attribute_controls + 1 :
             ].tolist()
             self.tokenizer.decode_token_ids(generated_tokens)

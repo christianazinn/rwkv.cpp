@@ -1,9 +1,8 @@
 import torch
 import torch.nn.functional as F
 from miditok import MMM, TokSequence
-from typing import Optional
-from transformers import LogitsProcessorList
-import rwkv_cpp_shared_library, rwkv_cpp_model
+from transformers import LogitsProcessorList, GenerationConfig
+from . import rwkv_cpp_shared_library, rwkv_cpp_model
 
 class CppModelConfig:
     """Configuration class for the C++ model wrapper."""
@@ -12,13 +11,11 @@ class CppModelConfig:
     def __init__(
         self,
         model_path: str = "",
-        gpu_layers: int = 0,
         state_path: str = "",
         **kwargs
     ):
         self.model_path = model_path
         self.state_path = state_path
-        self.gpu_layers = gpu_layers
 
 
 class CustomGenerator:
@@ -28,7 +25,7 @@ class CustomGenerator:
         self.model = rwkv_cpp_model.RWKVModel(
             self.library, 
             config.model_path, 
-            gpu_layer_count=config.gpu_layers
+            gpu_layer_count=0
         )
         self.tokenizer = tokenizer    
         self.current_state = None
@@ -120,16 +117,9 @@ class CustomGenerator:
     def generate(
         self,
         input_ids: torch.LongTensor,
-        temperature: float = 1.0,
-        repetition_penalty: float = 1.0,
-        top_k: int = 50,
-        top_p: float = 1.0,
-        max_new_tokens: int = 100,
-        epsilon_cutoff: float = 0.0,
-        do_sample: bool = True,
+        generation_config: GenerationConfig = None,
         logits_processor: LogitsProcessorList = None,
         attribute_controls: list = None,
-        eos_token_id: Optional[int] = None,
     ) -> torch.LongTensor:
         """
         Generate tokens with optional sampling and token injection.
@@ -157,6 +147,8 @@ class CustomGenerator:
         if batch_size > 1:
             raise ValueError("Batched generation is not yet supported")
         
+        print(logits_processor)
+        
         # Process initial input sequence
         input_sequence = input_ids[0].cpu().tolist()
         current_sequence = input_sequence.copy()
@@ -179,33 +171,34 @@ class CustomGenerator:
         did_last_token_end_in_bar_none = False
         ac_idx = 1
         
-        while tokens_generated < max_new_tokens:
+        while tokens_generated < generation_config.max_new_tokens:
             # Convert logits to next_token_logits format (batch_size, vocab_size)
             next_token_logits = logits_tensor.clone()
 
-            next_token_scores = logits_processor(current_sequence, next_token_logits)
+            if logits_processor:
+                next_token_scores = logits_processor(current_sequence, next_token_logits)
             
             # Apply temperature scaling
-            if temperature > 0 and temperature != 1.0:
-                next_token_scores = next_token_scores / temperature
+            if generation_config.temperature > 0 and generation_config.temperature != 1.0:
+                next_token_scores = next_token_scores / generation_config.temperature
             
             # Apply repetition penalty
-            if repetition_penalty != 1.0:
+            if generation_config.repetition_penalty != 1.0:
                 for prev_token in prev_tokens_set:
                     if prev_token < next_token_scores.size(-1):  # Safety check
-                        next_token_scores[0, prev_token] /= repetition_penalty
+                        next_token_scores[0, prev_token] /= generation_config.repetition_penalty
             
             # Apply epsilon cutoff
-            if epsilon_cutoff > 0:
+            if generation_config.epsilon_cutoff > 0:
                 # Create a mask for tokens below the probability threshold
                 probs = F.softmax(next_token_scores, dim=-1)
-                next_token_scores[probs < epsilon_cutoff] = -float('inf')
+                next_token_scores[probs < generation_config.epsilon_cutoff] = -float('inf')
             
-            if do_sample:
+            if generation_config.do_sample:
                 # Apply top-k filtering
-                if 0 < top_k < next_token_scores.size(-1):
+                if 0 < generation_config.top_k < next_token_scores.size(-1):
                     top_k_logits, top_k_indices = torch.topk(
-                        next_token_scores, top_k, dim=-1, largest=True, sorted=True
+                        next_token_scores, generation_config.top_k, dim=-1, largest=True, sorted=True
                     )
                     
                     # Create a new tensor with -inf everywhere
@@ -217,12 +210,12 @@ class CustomGenerator:
                     next_token_scores = filtered_logits
                 
                 # Apply top-p (nucleus) filtering
-                if top_p < 1.0:
+                if generation_config.top_p < 1.0:
                     sorted_logits, sorted_indices = torch.sort(next_token_scores, descending=True, dim=-1)
                     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
                     
                     # Remove tokens with cumulative probability above the threshold
-                    sorted_indices_to_remove = cumulative_probs > top_p
+                    sorted_indices_to_remove = cumulative_probs > generation_config.top_p
                     
                     # Shift the indices to the right to keep the first token above the threshold
                     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
@@ -240,9 +233,11 @@ class CustomGenerator:
                 next_token = torch.argmax(next_token_scores, dim=-1, keepdim=True)
             
             next_token_id = next_token[0, 0].item()
+            if next_token_id == 797:
+                next_token_id = 665
             
             # Process the generated token through the model
-            logits, current_state = self.model.model.eval(
+            logits, current_state = self.model.eval(
                 next_token_id, current_state, current_state, logits, use_numpy=True
             )
             logits_tensor = torch.tensor(logits, dtype=torch.float32).unsqueeze(0)
@@ -258,11 +253,10 @@ class CustomGenerator:
             did_last_token_end_in_bar_none = next_token_id in self.tokens_ending_bar_none
 
             if attribute_controls is not None and len(attribute_controls) > 1 and ((next_token_id in self.tokens_beginning_timesig and did_last_token_end_in_bar_none) or next_token_id in self.tokens_have_bar_none_and_timesig):
-                # TODO: is this a proper stopping criterion?
-                if ac_idx > len(attribute_controls):
+                if ac_idx >= len(attribute_controls):
                     break
 
-                injection_tokens = [tokenizer.vocab[ac] for ac in attribute_controls[ac_idx]]
+                injection_tokens = [self.tokenizer.vocab[ac] for ac in attribute_controls[ac_idx]]
                 ac_idx += 1
 
                 for injected_token_id in injection_tokens:
@@ -279,48 +273,13 @@ class CustomGenerator:
             tokens_generated += 1
             
             # Check if we've generated an EOS token and can stop early
-            if eos_token_id is not None and next_token_id == self.tokenizer.vocab["EOS_None"]:
+            if any(next_token_id == self.tokenizer.vocab[x] for x in ["FillBar_End", "Track_End", "EOS_None"]):
                 break
         
         # Return the complete sequence (input + generated)
         generated_tensor = torch.tensor(current_sequence, dtype=torch.long).unsqueeze(0)
         return generated_tensor
 
-
-# Example usage:
-def example_usage():
-    """
-    Example showing how to use the custom generator with a C++ model.
-    """
-    # Load the model
-    from your_model_file import create_cpp_model  # your import path
-    model = create_cpp_model("model_path", gpu_layers=99)
-    
-    # Define token injection rules
-    token_injection_rules = {
-        1000: [2000, 3000],  # When token 1000 appears, inject tokens 2000 and 3000
-        500: 600,            # When token 500 appears, inject token 600
-    }
-    
-    # Create generator
-    generator = CustomGenerator(model)
-    
-    # Generate with token injection
-    input_ids = torch.tensor([[1, 2, 3, 4]])
-    outputs = generator.generate(
-        input_ids=input_ids,
-        num_beams=1,
-        temperature=1.0,
-        repetition_penalty=1.2,
-        top_k=20,
-        top_p=0.95,
-        max_new_tokens=500,
-        epsilon_cutoff=9e-4,
-        do_sample=True,
-        token_injection_rules=token_injection_rules
-    )
-    
-    print("Generated sequence:", outputs[0].tolist())
 
 if __name__ == "__main__":
     from pathlib import Path
