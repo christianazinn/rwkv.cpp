@@ -66,7 +66,7 @@ def generate(
     # Generate new tracks
     if inference_config.autoregressive:
         for track in inference_config.new_tracks:
-            score = generate_new_track(model, tokenizer, track, generate_kwargs)
+            score = generate_new_track(model, tokenizer, track, score, generate_kwargs)
 
     return score
 
@@ -121,6 +121,7 @@ def generate_new_track(
     # Decode BPE ids before getting the associated tokens
     tokenizer.decode_token_ids(output_seq)
     output_seq.tokens = tokenizer._ids_to_tokens(output_seq.ids)
+    print(output_seq.tokens)
 
     # It is expected to have a <TRACK_END> token at the end of the sequence.
     if output_seq.tokens[-1] != "Track_End":
@@ -271,7 +272,7 @@ def infill_bars(
         logits_processor.n_bars_to_infill = (
             subset_bars_to_infill[1] - subset_bars_to_infill[0]
         )
-        logits_processor.n_attribute_controls = len(subset_bars_to_infill[2])
+        logits_processor.n_attribute_controls = len(subset_bars_to_infill[2][0])
         logits_processor.infill_type = subset_bars_to_infill[3]
         logit_processor_list = LogitsProcessorList()
         logit_processor_list.append(logits_processor)
@@ -282,7 +283,7 @@ def infill_bars(
         offset = 0
 
         for i in range(logits_processor.n_bars_to_infill):
-            print(input_seq.ids)
+            # print(input_seq.ids)
             output_ids = model.generate(
                 LongTensor([input_seq.ids]),
                 logits_processor=logit_processor_list,
@@ -304,13 +305,13 @@ def infill_bars(
             # Here we isolate the generated tokens doing some filtering. In particular,
             # the model may generate some tokens before the first Bar_None token
             generated_tokens = TokSequence(are_ids_encoded=True)
-            print("output ids")
-            print(output_ids.tolist())
+            # print("output ids")
+            # print(output_ids.tolist())
             # print(new_generated_tokens.ids)
             generated_tokens.ids = output_ids[
-                fill_start_idx + len(subset_bars_to_infill[2]) + offset + 2 : -1
+                fill_start_idx + len(subset_bars_to_infill[2][i]) + offset + 2 : -1
             ].tolist()
-            print(generated_tokens.ids)
+            # print(generated_tokens.ids)
             # decode_token_ids doesn't support numpy arrays for ids list
             # print(generated_tokens.ids)
             tokenizer.decode_token_ids(generated_tokens)
@@ -321,25 +322,28 @@ def infill_bars(
                 np.array(generated_tokens.ids) == tokenizer.vocab["Bar_None"]
             )[0]
             # print(bar_none_token_idxs)
-            print(generated_tokens.tokens)
+            # print(generated_tokens.tokens)
             try:
                 generated_tokens.ids = generated_tokens.ids[
                     bar_none_token_idxs[0] : bar_none_token_idxs[1]
                     # bar_none_token_idxs[0] : bar_none_token_idxs[logits_processor.n_bars_to_infill]
                 ]
-                print("gentokid")
+                # print("gentokid")
                 new_generated_tokens.ids += generated_tokens.ids
-                print(generated_tokens.ids)
+                # print(generated_tokens.ids)
                 generated_tokens.ids.append(tokenizer.vocab["Bar_None"])
                 generated_tokens.ids.append(tokenizer.vocab["TimeSig_4/4"])
-                attribute_controls = subset_bars_to_infill[2]
-                for control in attribute_controls:
-                    generated_tokens.ids.append(tokenizer.vocab[control])
+                if i < logits_processor.n_bars_to_infill:
+                    attribute_controls = subset_bars_to_infill[2][i+1]
+                    # print(attribute_controls)
+                    # print("------------------------------\n\n\n\n")
+                    for control in attribute_controls:
+                        generated_tokens.ids.append(tokenizer.vocab[control])
                 tokenizer.encode_token_ids(generated_tokens)
-                print("----------------------asdf")
-                print(input_seq.ids[-10:])
-                print(generated_tokens.ids[:10])
-                print("-------------")
+                # print("----------------------asdf")
+                # print(input_seq.ids[-10:])
+                # print(generated_tokens.ids[:10])
+                # print("-------------")
                 input_seq.ids += generated_tokens.ids
                 # new_generated_tokens.ids += generated_tokens.ids
                 offset += len(generated_tokens.ids)
@@ -355,10 +359,10 @@ def infill_bars(
                 #     f"{subset_bars_to_infill[1]} on track {track_idx}"
                 #     " because the model failed to generate a sequence of the right length"
                 # )
-        print("---------------done--------------------")
-        print(new_generated_tokens.ids)
+        # print("---------------done--------------------")
+        # print(new_generated_tokens.ids)
         tokenizer.decode_token_ids(new_generated_tokens)
-        print(new_generated_tokens.ids)
+        # print(new_generated_tokens.ids)
 
         tokens[track_idx].ids[token_start_idx:token_end_idx] = new_generated_tokens.ids
         tokens[track_idx].tokens = tokenizer._ids_to_tokens(tokens[track_idx].ids)
@@ -546,7 +550,7 @@ def _adapt_prompt_for_infilling(
         output_toksequence.tokens.append(infill_program_token)
             
     # TODO: not for mistral
-    attribute_controls = subset_bars_to_infill[2]
+    attribute_controls = subset_bars_to_infill[2][0]
     for control in attribute_controls:
         output_toksequence.ids.append(tokenizer.vocab[control])
         output_toksequence.tokens.append(control)
@@ -554,9 +558,9 @@ def _adapt_prompt_for_infilling(
     # Encode into BPE tokens
     tokenizer.encode_token_ids(output_toksequence)
 
-    print(output_toksequence.ids)
-    print(output_toksequence.tokens)
-    print("-------------------------------")
+    # print(output_toksequence.ids)
+    # print(output_toksequence.tokens)
+    # print("-------------------------------")
 
     #Just for debugging purposes
 
@@ -589,17 +593,19 @@ if __name__ == "__main__":
     from symusic import Synthesizer, dump_wav
     from pathlib import Path
     from rwkv_cpp.cpp_model import create_cpp_model
-    trk = 0
-    acl = ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_8', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']
+    trk = 2
+    acl = ['ACTrackOnsetPolyphonyMin_1', 'ACTrackOnsetPolyphonyMax_4', 'ACTrackNoteDensityMin_6', 'ACTrackNoteDensityMax_14', 'ACTrackNoteDurationWhole_1', 'ACTrackNoteDurationHalf_1', 'ACTrackNoteDurationQuarter_1', 'ACTrackNoteDurationEight_0', 'ACTrackNoteDurationSixteenth_0', 'ACTrackRepetition_0.22']
+    
+    # [['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_8', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1'], ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_1', 'ACBarNoteDensity_16', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']]
     INFERENCE_CONFIG = InferenceConfig(
         bars_to_generate={
             # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
-            trk: [(14, 16, acl, "bar")],
+            # trk: [(14, 16, acl, "bar")],
         },
         new_tracks=[
-            # (0, ["ACBarPitchClass_3", "ACTrackNoteDensityMax_4", "ACTrackRepetition_0.89"]),
+            (0, acl),
         ],
-        context_length=4
+        context_length=8
     )
 
     gen_config = GenerationConfig(
@@ -608,7 +614,7 @@ if __name__ == "__main__":
             repetition_penalty=1.2,
             top_k=20,
             top_p=0.95,
-            max_new_tokens=300,
+            max_new_tokens=500,
             epsilon_cutoff=9e-4,
             # ALWAYS test once with do_sample=False
             do_sample=True,
@@ -657,10 +663,12 @@ if __name__ == "__main__":
 
     # matplotlib
     from matplotlib import pyplot as plt
-    intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
+    print(len(outscore.tracks))
+    print(len(output_scores.tracks))
+    intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk-trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
     outtrack = outscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
 
-    a = 200
+    a = 0
     b = 500
     intrack_truncated = [intrack[0][:, a:b], intrack[1][:, a:b]]
     outtrack_truncated = [outtrack[0][:, a:b], outtrack[1][:, a:b]]

@@ -23,7 +23,7 @@ TOP_K = int(os.getenv("TOP_K", 20))
 TOP_P = float(os.getenv("TOP_P", 0.95))
 EPSILON_CUTOFF = 9e-4 # None
 ETA_CUTOFF = None
-MAX_NEW_TOKENS = 150
+MAX_NEW_TOKENS = 100
 MAX_LENGTH = 99999
 
 HERE = Path(__file__).parent
@@ -139,7 +139,7 @@ def test_generate(tokenizer: MMM,
     ticks_bars = get_bars_ticks(score, only_notes_onsets=True)
     ticks_beats = get_beats_ticks(score, only_notes_onsets=True)
     try:
-        density_controls = density_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+        density_controls = density_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start-1, bar_idx_infill_start + NUM_BARS_TO_INFILL)))[1:]
         duration_controls = duration_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
         polyphony_controls = polyphony_control.compute(score.tracks[track_idx], score.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
     except Exception as e:
@@ -148,7 +148,7 @@ def test_generate(tokenizer: MMM,
         print(f"Error computing attribute controls: {e}")
 
     # print("starting")
-    # print(density_controls)
+    print(density_controls)
     # print(duration_controls)
     # print(polyphony_controls)
     # print("ending")
@@ -162,10 +162,16 @@ def test_generate(tokenizer: MMM,
         )
         return False
     
-    partial_acl = [polyphony_controls[0], polyphony_controls[1], density_controls[0], duration_controls[0], duration_controls[1], duration_controls[2], duration_controls[3], duration_controls[4]] if not DRUM_GENERATION else [density_controls[0]]
+    acl = []
+    for i in range(NUM_BARS_TO_INFILL):
+        this_bar_acl = [polyphony_controls[2*i], polyphony_controls[2*i+1], density_controls[i], duration_controls[5*i], duration_controls[5*i+1], duration_controls[5*i+2], duration_controls[5*i+3], duration_controls[5*i+4]] if not DRUM_GENERATION else [density_controls[i]]
+        partial_acl = [f"{x.type_}_{x.value}" for x in this_bar_acl]
+        acl.append(partial_acl)
     
-    acl = [f"{x.type_}_{x.value}" for x in partial_acl]
-    print(acl)
+    # partial_acl = [polyphony_controls[0], polyphony_controls[1], density_controls[0], duration_controls[0], duration_controls[1], duration_controls[2], duration_controls[3], duration_controls[4]] if not DRUM_GENERATION else [density_controls[0]]
+    
+    # acl = [f"{x.type_}_{x.value}" for x in partial_acl]
+    # print(acl)
 
     inference_config = InferenceConfig(
             CONTEXT_SIZE,
@@ -185,7 +191,7 @@ def test_generate(tokenizer: MMM,
     try:
         start_time = time.time()
 
-        _ = generate(
+        output = generate(
             model,
             tokenizer,
             inference_config,
@@ -195,12 +201,37 @@ def test_generate(tokenizer: MMM,
         )
 
         end_time = time.time()
+        ticks_bars = get_bars_ticks(output, only_notes_onsets=True)
+        ticks_beats = get_beats_ticks(output, only_notes_onsets=True)
+        after_density_controls = density_control.compute(output.tracks[track_idx], output.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start-1, bar_idx_infill_start + NUM_BARS_TO_INFILL)))[1:]
+        after_duration_controls = duration_control.compute(output.tracks[track_idx], output.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+        after_polyphony_controls = polyphony_control.compute(output.tracks[track_idx], output.ticks_per_quarter, ticks_bars, ticks_beats, list(range(bar_idx_infill_start, bar_idx_infill_start + NUM_BARS_TO_INFILL)))
+
+        def prec(x):
+            if x == "18+":
+                return 19
+            return int(x)
+        density_deltas = [abs(prec(x.value) - prec(y.value)) for x, y in zip(density_controls, after_density_controls)]
+        duration_deltas = [abs(int(x.value) - int(y.value)) for x, y in zip(duration_controls, after_duration_controls)]
+        polyphony_deltas = [abs(int(x.value) - int(y.value)) for x, y in zip(polyphony_controls, after_polyphony_controls)]
+
+        if any(x > 4 for x in density_deltas) or any(x > 2 for x in polyphony_deltas):
+            return False
+
+        with open("acs.txt", "a") as f:
+            f.write(str({
+                "density_deltas": density_deltas,
+                "duration_deltas": duration_deltas,
+                "polyphony_deltas": polyphony_deltas
+            }))
+            f.write("\n")
+
     except Exception as e: # noqa: BLE001
         print(f"An unexpected error occurred during generation: {e}")
         traceback.print_exc()  # full stack trace
         return False
     
-    _.dump_midi(
+    output.dump_midi(
             MIDI_OUTPUT_FOLDER / f"{input_midi_path.stem}_track{track_idx}_"
             f"infill_bars{bar_idx_infill_start}_{bar_idx_infill_start+NUM_BARS_TO_INFILL}"
             f"_context_{CONTEXT_SIZE}"

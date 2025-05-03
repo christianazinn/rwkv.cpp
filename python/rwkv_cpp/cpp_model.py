@@ -66,8 +66,8 @@ class CppModelForCausalLM(PreTrainedModel, GenerationMixin):
         import numpy as np
         import torch
         
-        n_layer = 8  # As mentioned in your description
-        n_embd = 512  # Based on your state tensor dimensions
+        n_layer = 12
+        n_embd = 384
         
         # Initialize components for each layer
         all_states = []

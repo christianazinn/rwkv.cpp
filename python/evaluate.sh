@@ -8,10 +8,10 @@ export TOP_P=0.95
 export MODEL="mrwkv"
 # rcpj should be the base one for rwkv-12, idk
 export MODEL_PATH="/home/christian/MIDI-RWKV/src/outputs/m2fla/rcpp.bin"
-export STATE_PATH="" # "/home/christian/MIDI-RWKV/RWKV-PEFT/peft_model/rwkv-6.pth" # ""
+export STATE_PATH="" # "/home/christian/MIDI-RWKV/RWKV-PEFT/peft_model/rwkv-16.pth" # ""
 
-export N_BARS=2
-export CTX=8
+export N_BARS=4
+export CTX=16
 num_generations=200
 export DRUMS=0
 export END_INFILLING=0

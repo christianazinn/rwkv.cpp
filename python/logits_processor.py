@@ -107,7 +107,8 @@ class StopLogitsProcessor(LogitsProcessor):
         scores[:, 797] = -penalty
 
         scores[:, 4] = -penalty # Infill_Track
-        scores[:, 6] = -penalty
-        scores[:, 0] = -penalty
+        scores[:, 6] = -penalty # FillBar_End
+        scores[:, 0] = -penalty # PAD_None
+        scores[:, 8] = -penalty
 
         return scores
