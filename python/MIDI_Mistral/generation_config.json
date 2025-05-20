@@ -1,0 +1,12 @@
+{
+  "do_sample": true,
+  "epsilon_cutoff": null,
+  "eta_cutoff": null,
+  "max_new_tokens": 256,
+  "pad_token_id": 0,
+  "repetition_penalty": 1.2,
+  "temperature": 0.8,
+  "top_k": 10,
+  "top_p": 0.95,
+  "transformers_version": "4.44.2"
+}

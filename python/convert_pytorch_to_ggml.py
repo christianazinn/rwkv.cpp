@@ -87,7 +87,6 @@ def write_state_dict(state_dict: Dict[str, torch.Tensor], dest_path: str, data_t
         for k in state_dict.keys():
             tensor: torch.Tensor = state_dict[k].float()
 
-            # TODO: maybe not for time_state
             if '.time_' in k:
                 tensor = tensor.squeeze()
 

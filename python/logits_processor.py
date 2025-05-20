@@ -61,7 +61,6 @@ class StopLogitsProcessor(LogitsProcessor):
         start_time = time.time()
 
         generated_tokens = TokSequence(are_ids_encoded=True)
-        print(input_ids)
 
         if self.infill_type == "bar":
             fill_start_idx = np.where(
@@ -104,12 +103,12 @@ class StopLogitsProcessor(LogitsProcessor):
         # don't sample track start/end
         scores[:, self.track_start_token_id] = -penalty
         scores[:, self.track_end_token_id] = -penalty
-        # mess around with 797 and 665 logits
-        scores[:, 797] = -penalty
-
+        
+        scores[:, 797] = -penalty # consecutive Bar_None
         scores[:, 4] = -penalty # Infill_Track
         scores[:, 6] = -penalty # FillBar_End
         scores[:, 0] = -penalty # PAD_None
-        scores[:, 8] = -penalty
+        scores[:, 8] = -penalty # Track_Start
+        scores[:, 663] = -penalty # nonsense token???
 
         return scores

@@ -54,7 +54,8 @@ def generate(
         tokenizer.vocab["Bar_None"], tokenizer.vocab["FillBar_End"], tokenizer.vocab["Track_Start"], tokenizer.vocab["Track_End"], tokenizer
     )
 
-    input_tokens = tokenizer.encode(score, concatenate_track_sequences=False)
+    if not input_tokens:
+        input_tokens = tokenizer.encode(score, concatenate_track_sequences=False)
 
     # Infill bars
     if inference_config.infilling:
@@ -170,33 +171,7 @@ def generate_infilling(
 
     tracks_to_infill = inference_config.bars_to_generate.keys()
 
-    start_time = time.time()
-    # input_tokens = tokenizer.encode(score, concatenate_track_sequences=False)
-
-    """
-    Just for debugging purposes
-    print_input_tokens = tokenizer.encode(score)
-
-    tokenizer.decode_token_ids(print_input_tokens)
-    with open("original_tokens.txt", "w") as file:
-        bar_n = 0
-        track_n = 0
-        for token in print_input_tokens.tokens:
-            if token == "Track_End":
-                bar_n = 0
-                track_n += 1
-            if token == "Bar_None":
-                file.write(f"TrackNumber:{track_n} BarNumber:{bar_n} " + token + "\n")
-                bar_n += 1
-            else:
-                file.write(token + "\n")
-    """
-
-    end_time = time.time()
-    print(
-        "[INFO::generate_infilling] Time spent for converting score to tokens: ",
-        end_time - start_time,
-    )
+    assert len(tracks_to_infill) == 1
 
     for track_to_infill in tracks_to_infill:
         infill_bars(
@@ -302,14 +277,15 @@ def infill_bars(
         # the model may generate some tokens before the first Bar_None token
         generated_tokens = TokSequence(are_ids_encoded=True)
         print("output ids")
-        print(output_ids.tolist())
+        # print(output_ids.tolist())
         generated_tokens.ids = output_ids[
             fill_start_idx + len(subset_bars_to_infill[2][0]) + 2 : -1
         ].tolist()
-        # print(generated_tokens.ids)
         # decode_token_ids doesn't support numpy arrays for ids list
         # print(generated_tokens.ids)
         tokenizer.decode_token_ids(generated_tokens)
+        # print(generated_tokens.ids)
+
         if len(generated_tokens.ids) > 0 and generated_tokens.ids[0] != tokenizer.vocab["Bar_None"]:
             generated_tokens.ids.insert(0, tokenizer.vocab["Bar_None"])
             generated_tokens.ids.insert(1, tokenizer.vocab["TimeSig_4/4"])
@@ -329,7 +305,7 @@ def _adapt_prompt_for_infilling(
     track_idx: int,
     tokens: list[TokSequence],
     subset_bars_to_infill: tuple[int, int, list[str]],
-    context_length: int
+    context_length: int,
 ) -> TokSequence:
     """
     Construct the prompt for bar infilling.
@@ -403,7 +379,9 @@ def _adapt_prompt_for_infilling(
             seq_before.ids.append(tokenizer.vocab["Infill_Bar"])
             seq_before.tokens.append("Infill_Bar")
         seq_after = tokens[track_idx][token_idx_end:context_token_end_idx]
-        toksequence_to_infill += seq_before + seq_after
+        toksequence_to_infill += seq_before
+        if not os.getenv("partial_end"):
+            toksequence_to_infill += seq_after
         toksequence_to_infill.ids.append(tokenizer.vocab["Track_End"])
         toksequence_to_infill.tokens.append("Track_End")
         
@@ -438,9 +416,14 @@ def _adapt_prompt_for_infilling(
                 #   miditok is not always right, meaning that the list
                 #   of tokens after the context may be out of the allowed
                 #   range
-                context_token_end_idx = np.nonzero(
-                    times >= bars_ticks[end_bar_idx + context_length]
-                )[0]
+                if os.getenv("partial_end"):
+                    context_token_end_idx = np.nonzero(
+                        times >= bars_ticks[end_bar_idx]
+                    )[0]
+                else:
+                    context_token_end_idx = np.nonzero(
+                        times >= bars_ticks[end_bar_idx + context_length]
+                    )[0]
                 # In that case, we just take the last token as the end of context
                 if len(context_token_end_idx) == 0:
                     context_token_end_idx = len(tokens[i]) - 1
@@ -499,7 +482,6 @@ def _adapt_prompt_for_infilling(
         output_toksequence.ids.append(infill_program_id)
         output_toksequence.tokens.append(infill_program_token)
             
-    # TODO: not for mistral
     attribute_controls = subset_bars_to_infill[2][0]
     for control in attribute_controls:
         output_toksequence.ids.append(tokenizer.vocab[control])
@@ -509,23 +491,7 @@ def _adapt_prompt_for_infilling(
     tokenizer.encode_token_ids(output_toksequence)
 
     # print(output_toksequence.ids)
-    # print(output_toksequence.tokens)
-    # print("-------------------------------")
-
-    #Just for debugging purposes
-
-    # with open("model_prompt_tokens.txt", "w") as file:
-    #     bar_n = 0
-    #     track_n = 0
-    #     for token in output_toksequence.tokens:
-    #         if token == "Track_End":
-    #             bar_n = 0
-    #             track_n += 1
-    #         if token == "Bar_None":
-    #             file.write(f"TrackNumber:{track_n} BarNumber:{bar_n} " + token + "\n")
-    #             bar_n += 1
-    #         else:
-    #             file.write(token + "\n")
+    # print(len(output_toksequence.ids))
 
     return output_toksequence, token_idx_start, token_idx_end
 
@@ -542,20 +508,19 @@ if __name__ == "__main__":
     from transformers import GenerationConfig
     from symusic import Synthesizer, dump_wav
     from pathlib import Path
-    from rwkv_cpp.custom_generation_loop import CustomGenerator, CppModelConfig
+    from rwkv_cpp.cpp_model import CustomGenerator, CppModelConfig
     trk = 0
-    acl = ['ACTrackOnsetPolyphonyMin_1', 'ACTrackOnsetPolyphonyMax_4', 'ACTrackNoteDensityMin_6', 'ACTrackNoteDensityMax_14', 'ACTrackNoteDurationWhole_1', 'ACTrackNoteDurationHalf_1', 'ACTrackNoteDurationQuarter_1', 'ACTrackNoteDurationEight_0', 'ACTrackNoteDurationSixteenth_0', 'ACTrackRepetition_0.22']
+    # acl = ['ACTrackOnsetPolyphonyMin_1', 'ACTrackOnsetPolyphonyMax_4', 'ACTrackNoteDensityMin_6', 'ACTrackNoteDensityMax_14', 'ACTrackNoteDurationWhole_1', 'ACTrackNoteDurationHalf_1', 'ACTrackNoteDurationQuarter_1', 'ACTrackNoteDurationEight_0', 'ACTrackNoteDurationSixteenth_0', 'ACTrackRepetition_0.22']
     
     acl = [['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_3', 'ACBarNoteDensity_8', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1'], ['ACBarOnsetPolyphonyMin_1', 'ACBarOnsetPolyphonyMax_1', 'ACBarNoteDensity_16', 'ACBarNoteDurationWhole_0', 'ACBarNoteDurationHalf_0', 'ACBarNoteDurationQuarter_1', 'ACBarNoteDurationEight_1', 'ACBarNoteDurationSixteenth_1']]
     INFERENCE_CONFIG = InferenceConfig(
         bars_to_generate={
-            # "ACTrackOnsetPolyphonyMin_1", "ACTrackOnsetPolyphonyMax_6", "ACBarOnsetPolyphonyMin_1", "ACBarPitchClass_11", "ACTrackNoteDensityMin_8", "ACBarNoteDensity_6", "ACBarNoteDurationEight_1", "ACTrackRepetition_1.00"
             trk: [(14, 16, acl, "bar")],
         },
         new_tracks=[
-            # (0, acl),
+            # (25, acl),
         ],
-        context_length=8
+        context_length=16
     )
 
     gen_config = GenerationConfig(
@@ -566,15 +531,14 @@ if __name__ == "__main__":
             top_p=0.95,
             max_new_tokens=500,
             epsilon_cutoff=9e-4,
-            # ALWAYS test once with do_sample=False
             do_sample=True,
         )
     
-    current_dir = Path("/home/christian/MIDI-RWKV/src/inference")
-    TOK_PATH = current_dir.parent / "tokenizer/tokenizer_with_acs.json"
-    MODEL_PATH = str(current_dir.parent / "outputs/m2fla/rcpp.bin")
-    INPUT_PATH = str(current_dir / "mat/rollinggirlCON.mid")
-    # INPUT_PATH = "/home/christian/MIDI-RWKV/RWKV-PEFT/data/disc_1/01_Introducing_The_Beatles__A_Taste_Of_Honey.mid"
+    proj_root = os.getenv("PROJECT_ROOT", "~/MIDI-RWKV")
+    TOK_PATH = proj_root + "/train/tokenizer/tokenizer_with_acs.json"
+    MODEL_PATH = proj_root + "/rwkv.cpp/python/rwkv_cpp/rcpp.bin"
+    current_dir = Path(__file__).parent
+    INPUT_PATH = str(current_dir / "mat/rollinggirl.mid")
     OUTPUT_PATH = str(current_dir / "mat/output.mid")
     OUTWAV_PATH = str(current_dir / "mat/output.wav")
     INWAV_PATH = str(current_dir / "mat/input.wav")
@@ -601,22 +565,26 @@ if __name__ == "__main__":
     output_scores.dump_midi(OUTPUT_PATH)
     print("Dumped MIDI, synthesizing...")
 
-    # # synth
+    from miditok.utils import get_bars_ticks
+
+    # synth
     synth = Synthesizer()
     outscore = Score(OUTPUT_PATH)
+    bars_ticks = get_bars_ticks(outscore)
+    outscore = outscore.clip(bars_ticks[10], bars_ticks[20], clip_end=True)
     inscore = Score(INPUT_PATH)
     outwav = synth.render(outscore, stereo=True)
     inwav = synth.render(inscore, stereo=True)
     dump_wav(OUTWAV_PATH, outwav, sample_rate=44100, use_int16=True)
     dump_wav(INWAV_PATH, inwav, sample_rate=44100, use_int16=True)
 
-    # print("Synthesized, plotting piano rolls...")
+    print("Synthesized, plotting piano rolls...")
 
     # matplotlib
     from matplotlib import pyplot as plt
     print(len(outscore.tracks))
     print(len(output_scores.tracks))
-    intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk-trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
+    intrack = inscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
     outtrack = outscore.resample(tpq=6, min_dur=1).tracks[trk].pianoroll(modes=["onset", "frame"], pitch_range=[0, 128], encode_velocity=False)
 
     a = 200
