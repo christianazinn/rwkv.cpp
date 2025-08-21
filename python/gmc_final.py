@@ -4,6 +4,7 @@ from rwkv_cpp import rwkv_cpp_shared_library, rwkv_cpp_model
 from typing import List
 from symusic import Score
 import miditok
+import os
 
 # hyperparams
 max_tokens = 1000
@@ -32,8 +33,9 @@ tok = miditok.REMI(config)
 break_id = 4
 bars_total = 17
 
+os.makedirs('outputs', exist_ok=True)
+
 mc = tok.encode(midi)
-# TODO: test empty pickup measure
 emptyPickupMeasure = False
 if mc[0].ids[0] == break_id and mc[0].ids[1] == break_id:
     mc[0].ids = mc[0].ids[1:]
@@ -74,5 +76,5 @@ for run in range(NUM_RUNS):
     if emptyPickupMeasure:
         build_list_of_tokens = [break_id] + build_list_of_tokens
     score = tok.decode([build_list_of_tokens])
-    outpath = f'sample_{run+1:02}.mid'
+    outpath = f'outputs/sample_{run+1:02}.mid'
     score.dump_midi(outpath)
