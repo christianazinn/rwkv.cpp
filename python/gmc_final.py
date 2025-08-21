@@ -15,14 +15,14 @@ top_k = 40
 
 parser = argparse.ArgumentParser(description='Generate completions from RWKV model based on a prompt')
 parser.add_argument('model_path', help='Path to RWKV model in ggml format')
-parser.add_argument('--midifile_path', help="MIDI file path")
+parser.add_argument('n_samples', type=int, help='Number of samples to generate')
 
 args = parser.parse_args()
 
 library = rwkv_cpp_shared_library.load_rwkv_shared_library()
 model = rwkv_cpp_model.RWKVModel(library, args.model_path)
 
-midi = Score(args.midifile_path)
+midi = Score("./prompt.mid")
 config = miditok.TokenizerConfig(
     pitch_range=(0,127),
     use_velocities=False,
@@ -47,9 +47,7 @@ if prompt_tokens and prompt_tokens[-1] != break_id:
 
 init_logits, init_state = model.eval_sequence_in_chunks(prompt_tokens, None, None, None, use_numpy=True)
 
-NUM_RUNS = 8
-
-for run in range(NUM_RUNS):
+for run in range(args.n_samples):
     build_list_of_tokens = prompt_tokens.copy()
     logits, state = init_logits.copy(), init_state.copy()
 
