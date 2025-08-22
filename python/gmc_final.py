@@ -40,7 +40,6 @@ emptyPickupMeasure = False
 if mc[0].ids[0] == break_id and mc[0].ids[1] == break_id:
     mc[0].ids = mc[0].ids[1:]
     emptyPickupMeasure = True
-    bars_total -= 1
 prompt_tokens: List[int] = mc[0].ids
 if prompt_tokens and prompt_tokens[-1] != break_id:
     prompt_tokens.append(break_id)
