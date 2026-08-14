@@ -45,25 +45,14 @@ def _bar_time_token_ids(tokenizer) -> set[int]:
             == ("Bar_None", "TimeSig_4/4")
         )
     }
-    canonical = TokSequence(tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False)
+    canonical = TokSequence(
+        tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False
+    )
     try:
         tokenizer.encode_token_ids(canonical)
     except Exception:
         return set()
     return equivalent_ids - set(canonical.ids)
-
-
-def canonical_structural_token_replacements(tokenizer) -> dict[int, int]:
-    """Map noncanonical 4/4 compound encodings to the tokenizer's canonical ID."""
-    canonical = TokSequence(tokens=["Bar_None", "TimeSig_4/4"], ids=[], are_ids_encoded=False)
-    try:
-        tokenizer.encode_token_ids(canonical)
-    except Exception:
-        return {}
-    if len(canonical.ids) != 1:
-        return {}
-    canonical_id = int(canonical.ids[0])
-    return {token_id: canonical_id for token_id in _bar_time_token_ids(tokenizer)}
 
 
 def _empty_decode_token_ids(tokenizer) -> set[int]:
@@ -176,12 +165,15 @@ class StopLogitsProcessor(LogitsProcessor):
 
         penalty = float("inf")
 
-        completed = n_bar_none > self.n_bars_to_infill
+        # If we reach the self.n_bars_to_infill + 1 BarStart token sampled,
+        # we have generated enough content
+        if n_bar_none > self.n_bars_to_infill:
+            scores[:, :] = -penalty  # Penalize all tokens
+            # But enforce the sampling of EOS token to stop generation
+            scores[:, self.eos_token_id] = 0.0
 
-        # Don't sample an EOS token until all bars are generated. Completion
-        # handling is applied after semantic masks below so the EOS token is not
-        # immediately masked by DISALLOW_FILLBAR_END.
-        if not completed:
+        # Don't sample an EOS token until all bars are generated
+        if n_bar_none <= self.n_bars_to_infill:
             scores[:, self.eos_token_id] = -penalty
 
         end_time = time.time()
@@ -191,9 +183,5 @@ class StopLogitsProcessor(LogitsProcessor):
             for token_id in token_ids:
                 if token_id < scores.shape[-1]:
                     scores[:, token_id] = -penalty
-
-        if completed:
-            scores[:, :] = -penalty
-            scores[:, self.eos_token_id] = 0.0
 
         return scores
